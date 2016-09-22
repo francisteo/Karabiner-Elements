@@ -62,6 +62,18 @@ enum class key_code : uint32_t {
   f10 = kHIDUsage_KeyboardF10,
   f11 = kHIDUsage_KeyboardF11,
   f12 = kHIDUsage_KeyboardF12,
+  f13 = kHIDUsage_KeyboardF13,
+  f14 = kHIDUsage_KeyboardF14,
+  f15 = kHIDUsage_KeyboardF15,
+  f16 = kHIDUsage_KeyboardF16,
+  f17 = kHIDUsage_KeyboardF17,
+  f18 = kHIDUsage_KeyboardF18,
+  f19 = kHIDUsage_KeyboardF19,
+  f20 = kHIDUsage_KeyboardF20,
+  f21 = kHIDUsage_KeyboardF21,
+  f22 = kHIDUsage_KeyboardF22,
+  f23 = kHIDUsage_KeyboardF23,
+  f24 = kHIDUsage_KeyboardF24,
 
   right_arrow = kHIDUsage_KeyboardRightArrow,
   left_arrow = kHIDUsage_KeyboardLeftArrow,
@@ -389,7 +401,7 @@ public:
     return it->second;
   }
 
-  // hid usage -> mac key code
+  // hid usage -> CoreGraphics key code
   static const std::unordered_map<key_code, CGKeyCode>& get_cg_key_map(void) {
     static std::unordered_map<key_code, CGKeyCode> map;
     if (map.empty()) {
@@ -580,9 +592,6 @@ public:
       map[key_code(kHIDUsage_KeyboardRightGUI)] = 0x36;
 
       map[key_code::vk_fn_modifier] = 0x3f;
-      map[key_code::vk_dashboard] = 0x82;
-      map[key_code::vk_launchpad] = 0x83;
-      map[key_code::vk_mission_control] = 0xa0;
     }
     return map;
   }
@@ -596,7 +605,27 @@ public:
     return it->second;
   }
 
-  static const std::unordered_map<key_code, uint8_t>& get_hid_aux_control_button_map(void) {
+  static const std::unordered_map<key_code, uint8_t>& get_hid_system_key_map(void) {
+    static std::unordered_map<key_code, uint8_t> map;
+    if (map.empty()) {
+      // These keys are not supported in CGEventPost in OS X 10.12.
+      map[key_code::vk_dashboard] = 0x82;
+      map[key_code::vk_launchpad] = 0x83;
+      map[key_code::vk_mission_control] = 0xa0;
+    }
+    return map;
+  }
+
+  static boost::optional<uint8_t> get_hid_system_key(key_code key_code) {
+    auto& map = get_hid_system_key_map();
+    auto it = map.find(key_code);
+    if (it == map.end()) {
+      return boost::none;
+    }
+    return it->second;
+  }
+
+  static const std::unordered_map<key_code, uint8_t>& get_hid_system_aux_control_button_map(void) {
     static std::unordered_map<key_code, uint8_t> map;
     if (map.empty()) {
       map[key_code(kHIDUsage_KeyboardPower)] = NX_POWER_KEY;
@@ -615,8 +644,8 @@ public:
     return map;
   }
 
-  static boost::optional<uint8_t> get_hid_aux_control_button(key_code key_code) {
-    auto& map = get_hid_aux_control_button_map();
+  static boost::optional<uint8_t> get_hid_system_aux_control_button(key_code key_code) {
+    auto& map = get_hid_system_aux_control_button_map();
     auto it = map.find(key_code);
     if (it == map.end()) {
       return boost::none;

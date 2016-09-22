@@ -3,12 +3,12 @@
 #include "boost_defs.hpp"
 
 #include "event_dispatcher_manager.hpp"
+#include "event_tap_manager.hpp"
 #include "logger.hpp"
 #include "manipulator.hpp"
 #include "modifier_flag_manager.hpp"
 #include "system_preferences.hpp"
 #include "types.hpp"
-#include "virtual_hid_manager_client.hpp"
 #include <IOKit/hidsystem/ev_keymap.h>
 #include <boost/optional.hpp>
 #include <list>
@@ -21,13 +21,14 @@ public:
   event_manipulator(const event_manipulator&) = delete;
 
   event_manipulator(void) : event_dispatcher_manager_(),
-                            virtual_hid_manager_client_(logger::get_logger()),
                             event_source_(CGEventSourceCreate(kCGEventSourceStateHIDSystemState)),
                             modifier_flag_manager_(),
                             key_repeat_manager_(*this) {
   }
 
   ~event_manipulator(void) {
+    event_tap_manager_ = nullptr;
+
     if (event_source_) {
       CFRelease(event_source_);
       event_source_ = nullptr;
@@ -35,9 +36,16 @@ public:
   }
 
   bool is_ready(void) {
-    return virtual_hid_manager_client_.is_connected() &&
-           event_dispatcher_manager_.is_connected() &&
+    return event_dispatcher_manager_.is_connected() &&
            event_source_ != nullptr;
+  }
+
+  void grab_mouse_events(void) {
+    event_tap_manager_ = std::make_unique<event_tap_manager>(modifier_flag_manager_);
+  }
+
+  void ungrab_mouse_events(void) {
+    event_tap_manager_ = nullptr;
   }
 
   void reset(void) {
@@ -48,8 +56,6 @@ public:
 
     modifier_flag_manager_.reset();
     modifier_flag_manager_.unlock();
-    hid_report::keyboard_input report;
-    virtual_hid_manager_client_.post_keyboard_input_report(report);
 
     event_dispatcher_manager_.set_caps_lock_state(false);
   }
@@ -57,8 +63,6 @@ public:
   void reset_modifier_flag_state(void) {
     modifier_flag_manager_.reset();
     // Do not call modifier_flag_manager_.unlock() here.
-    hid_report::keyboard_input report;
-    virtual_hid_manager_client_.post_keyboard_input_report(report);
   }
 
   void relaunch_event_dispatcher(void) {
@@ -187,7 +191,7 @@ public:
       return;
     }
 
-    post_key(from_key_code, to_key_code, pressed);
+    post_key(from_key_code, to_key_code, pressed, false);
 
     // set key repeat
     long initial_key_repeat_milliseconds = 0;
@@ -213,6 +217,11 @@ public:
 private:
   class manipulated_keys final {
   public:
+    manipulated_keys(const manipulated_keys&) = delete;
+
+    manipulated_keys(void) {
+    }
+
     void clear(void) {
       std::lock_guard<std::mutex> guard(mutex_);
 
@@ -276,6 +285,11 @@ private:
 
   class simple_modifications final {
   public:
+    simple_modifications(const simple_modifications&) = delete;
+
+    simple_modifications(void) {
+    }
+
     void clear(void) {
       std::lock_guard<std::mutex> guard(mutex_);
 
@@ -306,6 +320,8 @@ private:
 
   class key_repeat_manager final {
   public:
+    key_repeat_manager(const key_repeat_manager&) = delete;
+
     key_repeat_manager(event_manipulator& event_manipulator) : event_manipulator_(event_manipulator),
                                                                queue_(dispatch_queue_create(nullptr, nullptr)),
                                                                timer_(0) {
@@ -354,7 +370,7 @@ private:
                                     key_repeat_milliseconds * NSEC_PER_MSEC,
                                     0);
           dispatch_source_set_event_handler(timer_, ^{
-            event_manipulator_.post_key(from_key_code, to_key_code, pressed);
+            event_manipulator_.post_key(from_key_code, to_key_code, pressed, true);
           });
           dispatch_resume(timer_);
           from_key_code_ = from_key_code;
@@ -383,22 +399,12 @@ private:
       if (event_source_) {
         if (auto cg_key = krbn::types::get_cg_key(key_code)) {
           if (auto event = CGEventCreateKeyboardEvent(event_source_, static_cast<CGKeyCode>(*cg_key), pressed)) {
-            CGEventSetFlags(event, modifier_flag_manager_.get_cg_event_flags(key_code, CGEventGetFlags(event)));
+            CGEventSetFlags(event, modifier_flag_manager_.get_cg_event_flags(CGEventGetFlags(event), key_code));
             CGEventPost(kCGHIDEventTap, event);
             CFRelease(event);
           }
         }
       }
-
-      // We have to post modifier key event via virtual device driver for mouse events.
-      //
-      // Note:
-      // Unproperly usage of virtual device driver causes a security issue.
-      // Please read DEVELOPER.md > IOKit device report in kext.
-      //
-      hid_report::keyboard_input report;
-      report.modifiers = modifier_flag_manager_.get_hid_report_bits();
-      virtual_hid_manager_client_.post_keyboard_input_report(report);
 
       return true;
     }
@@ -415,28 +421,33 @@ private:
     }
   }
 
-  void post_key(krbn::key_code from_key_code, krbn::key_code to_key_code, bool pressed) {
+  void post_key(krbn::key_code from_key_code, krbn::key_code to_key_code, bool pressed, bool repeat) {
     if (event_source_) {
       if (auto cg_key = krbn::types::get_cg_key(to_key_code)) {
         if (auto event = CGEventCreateKeyboardEvent(event_source_, static_cast<CGKeyCode>(*cg_key), pressed)) {
-          CGEventSetFlags(event, modifier_flag_manager_.get_cg_event_flags(to_key_code, CGEventGetFlags(event)));
+          CGEventSetFlags(event, modifier_flag_manager_.get_cg_event_flags(CGEventGetFlags(event), to_key_code));
+          CGEventSetIntegerValueField(event, kCGKeyboardEventAutorepeat, repeat);
           CGEventPost(kCGHIDEventTap, event);
           CFRelease(event);
         }
-      }
-      if (auto hid_aux_control_button = krbn::types::get_hid_aux_control_button(to_key_code)) {
-        auto event_type = pressed ? krbn::event_type::key_down : krbn::event_type::key_up;
-        auto flags = modifier_flag_manager_.get_io_option_bits();
-        event_dispatcher_manager_.post_key(to_key_code, event_type, flags, false);
+
+      } else {
+        auto hid_system_key = krbn::types::get_hid_system_key(to_key_code);
+        auto hid_system_aux_control_button = krbn::types::get_hid_system_aux_control_button(to_key_code);
+        if (hid_system_key || hid_system_aux_control_button) {
+          auto event_type = pressed ? krbn::event_type::key_down : krbn::event_type::key_up;
+          auto flags = modifier_flag_manager_.get_io_option_bits();
+          event_dispatcher_manager_.post_key(to_key_code, event_type, flags, repeat);
+        }
       }
     }
   }
 
   event_dispatcher_manager event_dispatcher_manager_;
-  virtual_hid_manager_client virtual_hid_manager_client_;
   modifier_flag_manager modifier_flag_manager_;
   CGEventSourceRef event_source_;
   key_repeat_manager key_repeat_manager_;
+  std::unique_ptr<event_tap_manager> event_tap_manager_;
 
   system_preferences::values system_preferences_values_;
   std::mutex system_preferences_values_mutex_;

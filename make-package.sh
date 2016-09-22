@@ -19,17 +19,11 @@ echo "Copy Files"
 rm -rf pkgroot
 mkdir -p pkgroot
 
-basedir="pkgroot/Library/Extensions"
-mkdir -p "$basedir"
-for kext in VirtualHIDKeyboard.kext VirtualHIDManager.kext VirtualHIDPointing.kext; do
-    cp -R "src/core/kext/VirtualHIDDevice/build/Release/$kext" "$basedir/org.pqrs.driver.$kext"
-done
-
 basedir="pkgroot/Library/Application Support/org.pqrs/Karabiner-Elements"
 mkdir -p "$basedir"
 cp src/scripts/uninstaller.applescript "$basedir"
 cp src/scripts/uninstall.sh "$basedir"
-cp pkginfo/Scripts/preinstall "$basedir/uninstall_core.sh"
+cp src/scripts/uninstall_core.sh "$basedir/uninstall_core.sh"
 
 basedir="pkgroot/Library/Application Support/org.pqrs/Karabiner-Elements/bin"
 mkdir -p "$basedir"
